@@ -30,10 +30,10 @@ impl tls_api::TlsAcceptorBuilder for TlsAcceptorBuilder {
     }
 
     fn set_alpn_protocols(&mut self, protocols: &[&[u8]]) -> anyhow::Result<()> {
-        let protocols = &encode_alpn_protos(protocols)?;
+        let protocols = encode_alpn_protos(protocols)?;
         self.0
             .set_alpn_select_callback(move |_ssl, client_protocols| {
-                openssl::ssl::select_next_proto(protocols, client_protocols)
+                openssl::ssl::select_next_proto(&protocols, client_protocols)
                     .ok_or(openssl::ssl::AlpnError::NOACK)
             });
         Ok(())
