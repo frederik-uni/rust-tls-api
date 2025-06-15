@@ -11,9 +11,17 @@ use crate::handshake::HandshakeFuture;
 use anyhow::Context;
 use std::future::Future;
 
-pub struct TlsAcceptorBuilder(pub openssl::ssl::SslAcceptorBuilder);
+pub struct TlsAcceptorBuilder(pub openssl::ssl::SslAcceptorBuilder, Option<*mut Vec<u8>>);
 
-pub struct TlsAcceptor(pub openssl::ssl::SslAcceptor);
+pub struct TlsAcceptor(pub openssl::ssl::SslAcceptor, Option<*mut Vec<u8>>);
+
+impl Drop for TlsAcceptor {
+    fn drop(&mut self) {
+        if let Some(ptr) = self.1 {
+            drop(Box::from_raw(ptr));
+        }
+    }
+}
 
 fn to_openssl_pkcs12(pkcs12: &[u8], passphrase: &str) -> anyhow::Result<ParsedPkcs12_2> {
     let pkcs12 = openssl::pkcs12::Pkcs12::from_der(pkcs12)?;
@@ -31,6 +39,12 @@ impl tls_api::TlsAcceptorBuilder for TlsAcceptorBuilder {
 
     fn set_alpn_protocols(&mut self, protocols: &[&[u8]]) -> anyhow::Result<()> {
         let protocols = encode_alpn_protos(protocols)?;
+        let protocols_ptr *mut Vec<u8> = Box::into_raw(Box::new(vec));
+        let protocols: &'static [u8] = unsafe {
+            let vec_ref_leaked: &'static Vec<u8> = &*protocols_ptr;
+            vec_ref_leaked.as_slice()
+        };
+        self.1 = Some(protocols_ptr);
         self.0
             .set_alpn_select_callback(move |_ssl, client_protocols| {
                 match openssl::ssl::select_next_proto(&protocols, client_protocols) {
@@ -42,7 +56,7 @@ impl tls_api::TlsAcceptorBuilder for TlsAcceptorBuilder {
     }
 
     fn build(self) -> anyhow::Result<TlsAcceptor> {
-        Ok(TlsAcceptor(self.0.build()))
+        Ok(TlsAcceptor(self.0.build(), self.1))
     }
 }
 
@@ -101,7 +115,7 @@ impl tls_api::TlsAcceptor for TlsAcceptor {
             .set_private_key(pkey.as_ref())
             .map_err(anyhow::Error::new)?;
 
-        Ok(TlsAcceptorBuilder(builder))
+        Ok(TlsAcceptorBuilder(builder, None))
     }
 
     fn builder_from_pkcs12(pkcs12: &[u8], passphrase: &str) -> anyhow::Result<TlsAcceptorBuilder> {
@@ -126,7 +140,7 @@ impl tls_api::TlsAcceptor for TlsAcceptor {
             }
         }
 
-        Ok(TlsAcceptorBuilder(builder))
+        Ok(TlsAcceptorBuilder(builder, None))
     }
 
     spi_acceptor_common!(crate::TlsStream<S>);
