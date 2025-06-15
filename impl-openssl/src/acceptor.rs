@@ -10,16 +10,26 @@ use crate::encode_alpn_protos;
 use crate::handshake::HandshakeFuture;
 use anyhow::Context;
 use std::future::Future;
+use std::sync::Arc;
 
-pub struct TlsAcceptorBuilder(pub openssl::ssl::SslAcceptorBuilder, Option<*mut Vec<u8>>);
+pub struct TlsAcceptorBuilder(
+    pub openssl::ssl::SslAcceptorBuilder,
+    Option<Arc<AlpnProtocolsInner>>,
+);
 
-pub struct TlsAcceptor(pub openssl::ssl::SslAcceptor, Option<*mut Vec<u8>>);
+pub struct TlsAcceptor(
+    pub openssl::ssl::SslAcceptor,
+    Option<Arc<AlpnProtocolsInner>>,
+);
 
-impl Drop for TlsAcceptor {
+struct AlpnProtocolsInner(*mut Vec<u8>);
+
+unsafe impl Send for AlpnProtocolsInner {}
+unsafe impl Sync for AlpnProtocolsInner {}
+
+impl Drop for AlpnProtocolsInner {
     fn drop(&mut self) {
-        if let Some(ptr) = self.1 {
-            drop(Box::from_raw(ptr));
-        }
+        drop(unsafe { Box::from_raw(self.0) });
     }
 }
 
@@ -39,12 +49,12 @@ impl tls_api::TlsAcceptorBuilder for TlsAcceptorBuilder {
 
     fn set_alpn_protocols(&mut self, protocols: &[&[u8]]) -> anyhow::Result<()> {
         let protocols = encode_alpn_protos(protocols)?;
-        let protocols_ptr *mut Vec<u8> = Box::into_raw(Box::new(vec));
+        let protocols_ptr: *mut Vec<u8> = Box::into_raw(Box::new(protocols));
         let protocols: &'static [u8] = unsafe {
             let vec_ref_leaked: &'static Vec<u8> = &*protocols_ptr;
             vec_ref_leaked.as_slice()
         };
-        self.1 = Some(protocols_ptr);
+        self.1 = Some(Arc::new(AlpnProtocolsInner(protocols_ptr)));
         self.0
             .set_alpn_select_callback(move |_ssl, client_protocols| {
                 match openssl::ssl::select_next_proto(&protocols, client_protocols) {
